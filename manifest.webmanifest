@@ -1,0 +1,20 @@
+{
+  "name": "Planner",
+  "short_name": "Planner",
+  "description": "Ritual, capture, decide, focus and review: one calm day at a time.",
+  "start_url": "./#today",
+  "scope": "./",
+  "display": "standalone",
+  "orientation": "portrait",
+  "background_color": "#EFEDE5",
+  "theme_color": "#EFEDE5",
+  "icons": [
+    { "src": "icons/icon-192.png", "sizes": "192x192", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png" },
+    { "src": "icons/icon-512.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+  ],
+  "shortcuts": [
+    { "name": "Quick capture", "url": "./#capture", "icons": [{ "src": "icons/icon-192.png", "sizes": "192x192" }] },
+    { "name": "Decide", "url": "./#decide" }
+  ]
+}
