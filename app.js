@@ -2,7 +2,7 @@
    One file, no framework, so it opens instantly and works offline.
    Data lives on the phone (IndexedDB) and is backed up to a Google Sheet when sync is set up. */
 
-const VERSION = '1.0.0';
+const VERSION = '1.0.2';
 const BRIEF_URL = 'https://claude.ai/artifact/TPpDVAzU8PCFHAsQEd3aqi';
 const DAY_START_HOUR = 4; // a new day begins at 04:00
 const AREAS = ['Health', 'Wealth', 'Relationships', 'Mind', 'Purpose'];
@@ -177,17 +177,58 @@ async function syncPush() {
     if (j && j.ok) { s.lastSync = new Date().toISOString(); dbSet('state', state); }
   } catch (e) { /* offline: the next change retries */ }
 }
-async function syncPull(silent) {
-  const s = state.settings; if (!s.syncUrl || !navigator.onLine) return false;
+/* Back-tap notes wait in the Sheet's Inbox tab until the app collects them.
+   The app checks on open, on every return to it, when Decide or Capture opens,
+   every minute while it is on screen, and when "Check for new notes" is tapped. */
+let pullBusy = null;
+function syncPull(silent) {
+  if (pullBusy) return pullBusy;
+  pullBusy = doPull(silent).finally(() => { pullBusy = null; });
+  return pullBusy;
+}
+function typing() { const a = document.activeElement; return !!(a && (a.tagName === 'INPUT' || a.tagName === 'TEXTAREA')); }
+async function doPull(silent) {
+  const s = state.settings;
+  if (!s.syncUrl) { if (!silent) toast('Not connected yet. Open Rules → Google Sheet sync.'); return false; }
+  if (!navigator.onLine) { if (!silent) toast('You are offline. Notes wait safely in your Sheet.'); return false; }
   try {
-    const r = await fetch(s.syncUrl + (s.syncUrl.includes('?') ? '&' : '?') + 'op=pull&key=' + encodeURIComponent(s.syncKey));
+    const url = s.syncUrl.trim() + (s.syncUrl.includes('?') ? '&' : '?') + 'op=pull&key=' + encodeURIComponent((s.syncKey || '').trim()) + '&t=' + Date.now();
+    const r = await fetch(url, { cache: 'no-store', redirect: 'follow' });
     const j = await r.json();
-    if (!j || !j.ok) { if (!silent) toast('Sync said no. Check the secret word.'); return false; }
+    if (!j || !j.ok) {
+      s.pullErr = j && j.error === 'wrong key' ? 'wrong secret word' : 'the script said no';
+      dbSet('state', state);
+      if (!silent) { toast(j && j.error === 'wrong key' ? 'Wrong secret word. Fix it in Rules.' : 'Your Sheet said no. Check the link in Rules.'); render(); }
+      return false;
+    }
     const got = (j.captures || []).filter((c) => c && c.text && !state.notes.some((n) => n.id === c.id));
-    got.forEach((c) => state.notes.push({ id: c.id, text: String(c.text).slice(0, 500), at: c.at || new Date().toISOString(), src: 'back tap' }));
-    if (got.length) { save(); if (!silent) toast(got.length + ' note' + (got.length > 1 ? 's' : '') + ' from back tap'); render(); }
+    got.forEach((c) => state.notes.push({ id: c.id, text: String(c.text).slice(0, 500), at: c.at && !isNaN(new Date(c.at)) ? new Date(c.at).toISOString() : new Date().toISOString(), src: 'back tap' }));
+    s.lastPull = new Date().toISOString(); s.pullErr = '';
+    if (got.length) {
+      save(); toast(got.length + ' note' + (got.length > 1 ? 's' : '') + ' from back tap · in Decide');
+      if (!typing()) render();
+    } else {
+      dbSet('state', state);
+      if (!silent) { toast('No new notes. Everything is here.'); render(); }
+    }
     return true;
-  } catch (e) { if (!silent) toast('Could not reach your Google Sheet.'); return false; }
+  } catch (e) {
+    s.pullErr = 'could not reach your Sheet';
+    if (!silent) { toast('Could not reach your Google Sheet. Check the link in Rules.'); render(); }
+    return false;
+  }
+}
+function pullStrip() {
+  const s = state.settings;
+  if (!s.syncUrl) {
+    return '<div style="display:flex;flex-direction:column;gap:6px;border:1px solid var(--rose);border-radius:14px;padding:12px 14px"><span class="kicker" style="color:var(--rose)">Back tap isn’t linked to this app</span>'
+      + '<span class="small">Back-tap notes reach your Google Sheet, but this app isn’t connected to it yet, so they can’t come in. Paste the link and secret word in Rules, then tap Test and save now.</span>'
+      + '<a class="link" href="#rules">Open Rules ›</a></div>';
+  }
+  const st = s.pullErr ? 'Last check failed · ' + s.pullErr : s.lastPull ? 'Back tap checked ' + capturedLabel(s.lastPull) : 'Back tap not checked yet';
+  return '<div style="display:flex;align-items:center;justify-content:space-between;gap:10px;flex-wrap:wrap;border:1px solid var(--rule);border-radius:14px;padding:8px 12px">'
+    + '<span class="small" style="min-width:0;color:' + (s.pullErr ? 'var(--rose)' : 'var(--muted)') + '">' + esc(st) + '</span>'
+    + '<button class="link" style="min-height:40px" data-a="pullNow">Check for new notes</button></div>';
 }
 async function syncReport(html, name) {
   const s = state.settings; if (!s.syncUrl) { toast('Set up the Google Sheet first, in Rules.'); return false; }
@@ -358,6 +399,7 @@ routes.capture = (q) => {
     + '<div style="display:flex;flex-direction:column;gap:8px"><h1>Out of your head.</h1><p class="lede">No sorting now. Just keep it, and decide later.</p></div>'
     + '<label class="field"><span class="sr">Your note</span><textarea id="capText" class="input" rows="4" placeholder="Type, or tap the mic on the keyboard to speak" style="font-family:var(--text);font-size:19px;background:var(--card)">' + esc(q.text || '') + '</textarea></label>'
     + '<button class="btn" data-a="capSave">Keep it · decide later</button>'
+    + pullStrip()
     + (recent.length ? '<section class="sec"><div class="sechead"><span class="kicker" style="color:var(--muted)">Waiting in Decide · ' + state.notes.length + '</span><a class="link" href="#decide">Decide now</a></div>' + recent.map((n) => '<div class="row"><span class="grow"><span class="t">' + esc(n.text) + '</span><span class="s">' + capturedLabel(n.at) + ' · ' + esc(n.src || 'typed') + '</span></span></div>').join('') + '</section>' : '')
     + '<div class="card"><span class="kicker">Back tap</span><span class="small">Double-tap the back of your iPhone to capture from anywhere. Set it up once in Rules → Shortcuts.</span></div>'
     + '</div>';
@@ -373,9 +415,11 @@ routes.decide = () => {
   if (!cur) {
     return '<div class="screen"><div class="top"><span class="eyebrow">Layer II · Decide</span></div><h1>Empty it, every day</h1>'
       + '<section class="panel green"><span class="kicker" style="color:#F2C14E;letter-spacing:.24em">Notes · 0</span><span class="serif" style="font-size:30px;line-height:1.15">Empty. Your mind is clear.</span><span class="small">Every rhythm has its slot, and every note has a place.</span><a class="btn gold" href="#today">See today</a></section>'
+      + pullStrip()
       + '</div>' + tabs('decide');
   }
   const isRhythm = cur.kind === 'rhythm' || cur.kind === 'one', isDated = cur.kind === 'dated';
+  const noteCount = q.filter((x) => x.kind === 'note').length;
   const defs = isRhythm
     ? [['todo', 'Place it', 'Pick a day and an hour', '#8A5A00'], ['skip', cur.kind === 'one' ? 'Not tomorrow' : 'Skip this time', cur.kind === 'one' ? 'Choose another tonight' : 'Shows as missed in the report', '#6E7771']]
     : isDated ? [['todo', 'Place it', 'Pick an hour for it', '#8A5A00'], ['date', 'Another date', 'Bring it back later', '#A3324F'], ['go', 'Let it go', 'Delete it', '#6E7771']]
@@ -426,6 +470,8 @@ routes.decide = () => {
   return '<div class="screen" style="gap:18px">'
     + '<div class="top"><span class="eyebrow">Layer II · Decide</span><span class="small">' + (s.i + 1) + ' of ' + q.length + '</span></div>'
     + '<div style="display:flex;flex-direction:column;gap:8px"><h1 style="font-size:34px">Empty it, every day</h1><div class="seg" style="grid-template-columns:repeat(' + q.length + ',1fr)">' + bars + '</div></div>'
+    + pullStrip()
+    + (cur.kind !== 'note' && noteCount ? '<button class="link" style="min-height:40px;justify-content:flex-start" data-a="jumpNotes">' + noteCount + ' note' + (noteCount > 1 ? 's' : '') + ' after the rhythms · jump to notes ›</button>' : '')
     + '<div class="card" style="gap:6px"><span class="small" style="font-weight:500;color:' + (isRhythm ? 'var(--sapphire)' : isDated ? 'var(--rose)' : 'var(--muted)') + '">' + esc(cur.meta) + '</span><p style="margin:0;font-family:var(--text);font-style:italic;font-size:21px;line-height:1.35">' + esc(cur.text) + '</p>' + (cur.note && key !== 'todo' ? '<span class="small">' + esc(cur.note) + '</span>' : '') + '</div>'
     + '<div class="grid2">' + defs.map((d, k) => '<button class="choice' + (defs.length % 2 && k === defs.length - 1 ? ' wide' : '') + '" style="--c:' + d[3] + '" data-a="dChoice" data-k="' + k + '" aria-pressed="' + (s.choice === k) + '"><b>' + d[1] + '</b><span>' + d[2] + '</span></button>').join('') + '</div>'
     + panel
@@ -821,7 +867,7 @@ routes.rules = () => {
     + '<section class="sec" style="gap:10px"><div class="sechead"><h2>Google Sheet sync</h2><span class="small" style="color:' + (s.syncUrl ? 'var(--emerald)' : 'var(--rose)') + '">' + (s.syncUrl ? (s.lastSync ? 'saved ' + capturedLabel(s.lastSync) : 'connected') : 'not set up') + '</span></div>'
     + '<label class="field"><span>Web app link</span><input class="input" data-in="syncUrl" value="' + esc(s.syncUrl) + '" placeholder="https://script.google.com/macros/s/…/exec" inputmode="url" autocapitalize="off" autocorrect="off"></label>'
     + '<label class="field"><span>Secret word</span><input class="input" data-in="syncKey" value="' + esc(s.syncKey) + '" placeholder="The same word you put in the script" autocapitalize="off" autocorrect="off"></label>'
-    + '<div class="grid2"><button class="btn" data-a="syncTest">Test and save now</button><button class="btn ghost" data-a="syncRestore">Restore from Sheet</button></div></section>'
+    + '<div class="grid2"><button class="btn" data-a="syncTest">Test and save now</button><button class="btn ghost" data-a="syncRestore">Restore from Sheet</button></div>' + pullStrip() + '</section>'
     + '<section class="sec" style="gap:10px"><div class="sechead"><h2>Shortcuts</h2><span class="small">set up once</span></div>'
     + '<details class="card"><summary><b>Back tap twice → Quick capture</b></summary><ol class="small" style="margin:8px 0 0;padding-left:18px;font-size:13px;line-height:1.6"><li>Open the Shortcuts app → + → name it <b>Quick Capture</b>.</li><li>Add <b>Dictate Text</b> (or <b>Ask for Input</b> to type).</li><li>Add <b>Get Contents of URL</b>: your web app link above, Method <b>POST</b>, Request Body <b>JSON</b> with fields <b>op</b> = capture, <b>key</b> = your secret word, <b>text</b> = Dictated Text.</li><li>Add <b>Show Notification</b>: “Captured”.</li><li>Settings → Accessibility → Touch → <b>Back Tap</b> → <b>Double Tap</b> → choose <b>Quick Capture</b>.</li></ol><p class="small" style="margin:8px 0 0">The note lands in Decide the next time you open the app. No sync yet? Use <b>Open URLs</b> with this app’s link ending in <b>#capture</b> instead.</p></details>'
     + '<details class="card"><summary><b>Brahma Muhurta alarm</b></summary><ol class="small" style="margin:8px 0 0;padding-left:18px;font-size:13px;line-height:1.6"><li>New shortcut named exactly <b>Brahma Alarm</b>.</li><li>Add <b>Get Dates from Input</b> (Shortcut Input), then <b>Create Alarm</b> at that time, label “Brahma Muhurta”.</li><li>Turn on “Show in Share Sheet” is not needed. Done.</li></ol><p class="small" style="margin:8px 0 0">Now “Set alarm for tomorrow” on Today sets a real alarm in your Clock app.</p></details>'
@@ -939,6 +985,8 @@ const actions = {
   dRep(el) { ui.decide.rep = +el.dataset.k; render(); },
   dPrev() { ui.decide.i = Math.max(0, ui.decide.i - 1); resetDecide(); render(); },
   dSkipItem() { ui.decide.i += 1; resetDecide(); render(); },
+  jumpNotes() { const k = decideQueue().findIndex((x) => x.kind === 'note'); if (k >= 0) { ui.decide.i = k; resetDecide(); render(); } },
+  async pullNow() { toast('Checking your Sheet…'); await syncPull(false); },
   dConfirm() { confirmDecide(); },
   alarm() {
     const tm = addDays(todayISO(), 1); const d = day(tm); d.alarm = !d.alarm; save(); render();
@@ -1172,6 +1220,10 @@ document.addEventListener('visibilitychange', () => {
   } else if (state) { clearTimeout(saveTimer); dbSet('state', state); }
 });
 window.addEventListener('online', () => { syncPull(true); queueSync(); });
+window.addEventListener('pageshow', () => { if (state) syncPull(true); });
+window.addEventListener('focus', () => { if (state) syncPull(true); });
+window.addEventListener('hashchange', () => { if (state && /^#\/?(decide|capture)/.test(location.hash)) syncPull(true); });
+setInterval(() => { if (state && document.visibilityState === 'visible') syncPull(true); }, 60000);
 
 async function boot() {
   const [saved, aff] = await Promise.all([dbGet('state'), fetch('affirmations.json').then((r) => r.json()).catch(() => null)]);
