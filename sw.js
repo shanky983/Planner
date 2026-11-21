@@ -1,5 +1,5 @@
 // Offline-first cache. Bump VERSION on every release so phones pick up the new files.
-const VERSION = 'planner-v1.0.1';
+const VERSION = 'planner-v1.0.2';
 const CORE = ['./', './index.html', './styles.css', './app.js', './affirmations.json', './manifest.webmanifest', './icon-180.png', './icon-192.png', './icon-512.png'];
 self.addEventListener('install', (e) => {
   e.waitUntil(caches.open(VERSION).then((c) => c.addAll(CORE)).then(() => self.skipWaiting()));
